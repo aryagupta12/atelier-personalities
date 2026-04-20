@@ -1,0 +1,22 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      python-dotenv:
+        specifier: 0.0.1-security
+        version: 0.0.1-security
+
+packages:
+
+  python-dotenv@0.0.1-security:
+    resolution: {integrity: sha512-apeXcWdocxkoxZwtEngLBLzinwhNgaBZh9oeJSHtwoh4CtJY9eoPvz0yPWy+QlQlIw0BEeK09KbOvTZ1TK2pUA==}
+
+snapshots:
+
+  python-dotenv@0.0.1-security: {}
