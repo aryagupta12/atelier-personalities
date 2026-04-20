@@ -20,12 +20,9 @@ from prompt_builder import build_system_prompt, tone_label
 
 app = FastAPI(title="Witness Simulator API")
 
-_cors_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
