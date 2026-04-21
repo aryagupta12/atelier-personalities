@@ -26,7 +26,7 @@ def get_embed_model() -> str:
 
 
 def get_text_field() -> str:
-    return os.environ.get("PINECONE_TEXT_FIELD", "chunk_text")
+    return os.environ.get("PINECONE_TEXT_FIELD", "text")
 
 
 def get_upsert_batch_size() -> int:
