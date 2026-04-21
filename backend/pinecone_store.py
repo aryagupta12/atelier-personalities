@@ -17,6 +17,22 @@ def get_namespace() -> str:
     return os.environ.get("PINECONE_NAMESPACE", "segments")
 
 
+def use_integrated_embedding() -> bool:
+    return os.environ.get("PINECONE_USE_INTEGRATED_EMBEDDING", "true").lower() in {"1", "true", "yes", "on"}
+
+
+def get_embed_model() -> str:
+    return os.environ.get("PINECONE_EMBED_MODEL", "llama-text-embed-v2")
+
+
+def get_text_field() -> str:
+    return os.environ.get("PINECONE_TEXT_FIELD", "chunk_text")
+
+
+def get_upsert_batch_size() -> int:
+    return max(1, min(96, int(os.environ.get("PINECONE_UPSERT_BATCH_SIZE", "32"))))
+
+
 def get_pinecone_client() -> Pinecone:
     global _pc
     if _pc is None:
@@ -53,13 +69,25 @@ def get_index_host(dimension: Optional[int] = None) -> str:
         if not (dimension and cloud and region):
             raise
 
-        pc.create_index(
-            name=index_name,
-            dimension=dimension,
-            metric=os.environ.get("PINECONE_METRIC", "cosine"),
-            spec=ServerlessSpec(cloud=cloud, region=region),
-            deletion_protection="disabled",
-        )
+        if use_integrated_embedding():
+            pc.create_index_for_model(
+                name=index_name,
+                cloud=cloud,
+                region=region,
+                embed={
+                    "model": get_embed_model(),
+                    "field_map": {"text": get_text_field()},
+                    "metric": os.environ.get("PINECONE_METRIC", "cosine"),
+                },
+            )
+        else:
+            pc.create_index(
+                name=index_name,
+                dimension=dimension,
+                metric=os.environ.get("PINECONE_METRIC", "cosine"),
+                spec=ServerlessSpec(cloud=cloud, region=region),
+                deletion_protection="disabled",
+            )
         description = pc.describe_index(name=index_name)
         _host = description.host
         return _host
@@ -81,6 +109,14 @@ def upsert_segment_vectors(vectors: List[Dict], dimension: int) -> None:
     index.upsert(vectors=vectors, namespace=get_namespace())
 
 
+def upsert_segment_records(records: List[Dict]) -> None:
+    if not records:
+        return
+
+    index = get_index()
+    index.upsert_records(get_namespace(), records)
+
+
 def query_segment_vectors(vector: List[float], top_k: int):
     index = get_index()
     return index.query(
@@ -88,4 +124,16 @@ def query_segment_vectors(vector: List[float], top_k: int):
         vector=vector,
         top_k=top_k,
         include_metadata=True,
+    )
+
+
+def search_segment_records(query_text: str, top_k: int, fields: Optional[List[str]] = None):
+    index = get_index()
+    return index.search(
+        namespace=get_namespace(),
+        query={
+            "inputs": {"text": query_text},
+            "top_k": top_k,
+        },
+        fields=fields or [],
     )

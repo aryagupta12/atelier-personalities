@@ -1,85 +1,50 @@
 import os
 import anthropic
-import heapq
-import numpy as np
 import uuid
 import json
-from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Optional
 
 try:
-    from .pinecone_store import pinecone_enabled, query_segment_vectors, upsert_segment_vectors
-except ImportError:
-    from pinecone_store import pinecone_enabled, query_segment_vectors, upsert_segment_vectors
-
-_model = None
-_client = None
-
-
-def get_embedding_model():
-    global _model
-    if _model is None:
-        model_name = os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-        device = os.environ.get("EMBEDDING_DEVICE", "cpu")
-        _model = SentenceTransformer(model_name, device=device)
-    return _model
-
-
-def get_embedding_batch_size() -> int:
-    return max(1, int(os.environ.get("EMBEDDING_BATCH_SIZE", "8")))
-
-
-def get_embedding_dimension() -> int:
-    configured = os.environ.get("EMBEDDING_DIMENSION")
-    if configured:
-        return int(configured)
-    return int(get_embedding_model().get_sentence_embedding_dimension())
-
-
-def normalize_embeddings_enabled() -> bool:
-    return os.environ.get("EMBEDDING_NORMALIZE", "true").lower() in {"1", "true", "yes", "on"}
-
-
-def encode_texts(texts: List[str]) -> np.ndarray:
-    if not texts:
-        return np.array([])
-
-    model = get_embedding_model()
-    return model.encode(
-        texts,
-        batch_size=get_embedding_batch_size(),
-        show_progress_bar=False,
-        convert_to_numpy=True,
-        normalize_embeddings=normalize_embeddings_enabled(),
+    from .pinecone_store import (
+        get_text_field,
+        get_upsert_batch_size,
+        pinecone_enabled,
+        search_segment_records,
+        upsert_segment_records,
     )
+except ImportError:
+    from pinecone_store import (
+        get_text_field,
+        get_upsert_batch_size,
+        pinecone_enabled,
+        search_segment_records,
+        upsert_segment_records,
+    )
+
+_client = None
 
 
 def index_segments_in_pinecone(segments: List[Dict]) -> bool:
     if not pinecone_enabled() or not segments:
         return False
 
-    batch_size = get_embedding_batch_size()
-    dimension = get_embedding_dimension()
+    batch_size = get_upsert_batch_size()
+    text_field = get_text_field()
 
     for start in range(0, len(segments), batch_size):
         batch = segments[start:start + batch_size]
-        batch_texts = [seg.get("text", "")[:1024] for seg in batch]
-        embeddings = encode_texts(batch_texts)
-
-        vectors = []
-        for seg, embedding in zip(batch, embeddings):
-            vectors.append({
-                "id": seg["id"],
-                "values": embedding.tolist(),
-                "metadata": {
-                    "segment_id": seg["id"],
-                    "source": str(seg.get("source", "")),
-                    "page": int(seg.get("page", 0)),
-                    "preview": str(seg.get("preview", ""))[:500],
-                }
+        records = []
+        for seg in batch:
+            records.append({
+                "_id": seg["id"],
+                text_field: str(seg.get("text", ""))[:4000],
+                "segment_id": seg["id"],
+                "source": str(seg.get("source", "")),
+                "page": int(seg.get("page", 0)),
+                "preview": str(seg.get("preview", ""))[:500],
             })
 
-        upsert_segment_vectors(vectors, dimension=dimension)
+        upsert_segment_records(records)
 
     return True
 
@@ -159,69 +124,52 @@ def rank_segments_by_relevance(candidate: Dict, segments: List[Dict], top_n: int
     if not key_points:
         return segments[:top_n]
 
-    kp_embeddings = encode_texts(key_points)
-    mean_kp_embedding = np.mean(kp_embeddings, axis=0)
-
     if not segments:
         return []
-
-    def cosine_sim(a, b):
-        norm_a = np.linalg.norm(a)
-        norm_b = np.linalg.norm(b)
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return float(np.dot(a, b) / (norm_a * norm_b))
 
     segments_by_id = {seg["id"]: seg for seg in segments}
 
     if pinecone_enabled():
         try:
             query_top_k = min(len(segments), max(top_n * 3, top_n))
-            result = query_segment_vectors(vector=mean_kp_embedding.tolist(), top_k=query_top_k)
+            query_text = "\n".join(str(kp) for kp in key_points if kp).strip()
+            result = search_segment_records(query_text=query_text, top_k=query_top_k)
             ranked = []
             seen = set()
-            for match in getattr(result, "matches", []):
-                metadata = getattr(match, "metadata", {}) or {}
-                segment_id = getattr(match, "id", None)
-                if not segment_id and isinstance(metadata, dict):
-                    segment_id = metadata.get("segment_id")
+            hits = getattr(getattr(result, "result", None), "hits", None)
+            if hits is None and isinstance(result, dict):
+                hits = result.get("result", {}).get("hits", [])
+            for match in hits or []:
+                fields = getattr(match, "fields", None)
+                if fields is None and isinstance(match, dict):
+                    fields = match.get("fields", {})
+                segment_id = getattr(match, "_id", None)
+                if not segment_id and isinstance(match, dict):
+                    segment_id = match.get("_id")
+                if not segment_id and isinstance(fields, dict):
+                    segment_id = fields.get("segment_id")
                 if segment_id in segments_by_id and segment_id not in seen:
                     ranked.append(segments_by_id[segment_id])
                     seen.add(segment_id)
                     if len(ranked) >= top_n:
                         return ranked
-
-            if ranked:
-                remaining = [seg for seg in segments if seg["id"] not in seen]
-                return ranked + _rank_segments_locally(mean_kp_embedding, remaining, top_n - len(ranked), cosine_sim)
         except Exception:
             pass
 
-    return _rank_segments_locally(mean_kp_embedding, segments, top_n, cosine_sim)
-
-
-def _rank_segments_locally(mean_kp_embedding: np.ndarray, segments: List[Dict], top_n: int, cosine_sim) -> List[Dict]:
-    if top_n <= 0 or not segments:
-        return []
-
-    heap = []
-    batch_size = get_embedding_batch_size()
-
-    for start in range(0, len(segments), batch_size):
-        batch = segments[start:start + batch_size]
-        batch_texts = [seg.get("text", "")[:512] for seg in batch]
-        batch_embeddings = encode_texts(batch_texts)
-
-        for seg, embedding in zip(batch, batch_embeddings):
-            sim = cosine_sim(mean_kp_embedding, embedding)
-            item = (sim, seg["id"], seg)
-            if len(heap) < top_n:
-                heapq.heappush(heap, item)
-            else:
-                heapq.heappushpop(heap, item)
-
-    heap.sort(key=lambda item: item[0], reverse=True)
-    return [seg for _, _, seg in heap]
+    # Fallback is lexical if Pinecone isn't configured.
+    scored = []
+    key_terms = {
+        token.lower()
+        for kp in key_points
+        for token in str(kp).split()
+        if len(token) > 3
+    }
+    for seg in segments:
+        text = seg.get("text", "").lower()
+        score = sum(1 for term in key_terms if term in text)
+        scored.append((score, seg))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [seg for _, seg in scored[:top_n]]
 
 
 def build_persona(candidate: Dict, support_segments: List[Dict], supplemental_info: str = "", mode: str = "cross_examination") -> Dict:
