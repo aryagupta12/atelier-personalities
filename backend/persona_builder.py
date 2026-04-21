@@ -1,10 +1,16 @@
 import os
 import anthropic
+import heapq
 import numpy as np
 import uuid
 import json
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Optional
+
+try:
+    from .pinecone_store import pinecone_enabled, query_segment_vectors, upsert_segment_vectors
+except ImportError:
+    from pinecone_store import pinecone_enabled, query_segment_vectors, upsert_segment_vectors
 
 _model = None
 _client = None
@@ -13,8 +19,69 @@ _client = None
 def get_embedding_model():
     global _model
     if _model is None:
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
+        model_name = os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+        device = os.environ.get("EMBEDDING_DEVICE", "cpu")
+        _model = SentenceTransformer(model_name, device=device)
     return _model
+
+
+def get_embedding_batch_size() -> int:
+    return max(1, int(os.environ.get("EMBEDDING_BATCH_SIZE", "8")))
+
+
+def get_embedding_dimension() -> int:
+    configured = os.environ.get("EMBEDDING_DIMENSION")
+    if configured:
+        return int(configured)
+    return int(get_embedding_model().get_sentence_embedding_dimension())
+
+
+def normalize_embeddings_enabled() -> bool:
+    return os.environ.get("EMBEDDING_NORMALIZE", "true").lower() in {"1", "true", "yes", "on"}
+
+
+def encode_texts(texts: List[str]) -> np.ndarray:
+    if not texts:
+        return np.array([])
+
+    model = get_embedding_model()
+    return model.encode(
+        texts,
+        batch_size=get_embedding_batch_size(),
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=normalize_embeddings_enabled(),
+    )
+
+
+def index_segments_in_pinecone(segments: List[Dict]) -> bool:
+    if not pinecone_enabled() or not segments:
+        return False
+
+    batch_size = get_embedding_batch_size()
+    dimension = get_embedding_dimension()
+
+    for start in range(0, len(segments), batch_size):
+        batch = segments[start:start + batch_size]
+        batch_texts = [seg.get("text", "")[:1024] for seg in batch]
+        embeddings = encode_texts(batch_texts)
+
+        vectors = []
+        for seg, embedding in zip(batch, embeddings):
+            vectors.append({
+                "id": seg["id"],
+                "values": embedding.tolist(),
+                "metadata": {
+                    "segment_id": seg["id"],
+                    "source": str(seg.get("source", "")),
+                    "page": int(seg.get("page", 0)),
+                    "preview": str(seg.get("preview", ""))[:500],
+                }
+            })
+
+        upsert_segment_vectors(vectors, dimension=dimension)
+
+    return True
 
 
 def get_anthropic_client():
@@ -88,24 +155,16 @@ def rank_segments_by_relevance(candidate: Dict, segments: List[Dict], top_n: int
     """
     Rank segments by cosine similarity to candidate key_points.
     """
-    model = get_embedding_model()
-
     key_points = candidate.get("key_points", [])
     if not key_points:
         return segments[:top_n]
 
-    # Compute mean embedding of key points
-    kp_embeddings = model.encode(key_points)
+    kp_embeddings = encode_texts(key_points)
     mean_kp_embedding = np.mean(kp_embeddings, axis=0)
 
-    # Compute embeddings for each segment
-    segment_texts = [seg["text"][:512] for seg in segments]  # truncate for efficiency
-    if not segment_texts:
+    if not segments:
         return []
 
-    seg_embeddings = model.encode(segment_texts)
-
-    # Compute cosine similarities
     def cosine_sim(a, b):
         norm_a = np.linalg.norm(a)
         norm_b = np.linalg.norm(b)
@@ -113,13 +172,56 @@ def rank_segments_by_relevance(candidate: Dict, segments: List[Dict], top_n: int
             return 0.0
         return float(np.dot(a, b) / (norm_a * norm_b))
 
-    scored = []
-    for i, seg in enumerate(segments):
-        sim = cosine_sim(mean_kp_embedding, seg_embeddings[i])
-        scored.append((sim, seg))
+    segments_by_id = {seg["id"]: seg for seg in segments}
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [s for _, s in scored[:top_n]]
+    if pinecone_enabled():
+        try:
+            query_top_k = min(len(segments), max(top_n * 3, top_n))
+            result = query_segment_vectors(vector=mean_kp_embedding.tolist(), top_k=query_top_k)
+            ranked = []
+            seen = set()
+            for match in getattr(result, "matches", []):
+                metadata = getattr(match, "metadata", {}) or {}
+                segment_id = getattr(match, "id", None)
+                if not segment_id and isinstance(metadata, dict):
+                    segment_id = metadata.get("segment_id")
+                if segment_id in segments_by_id and segment_id not in seen:
+                    ranked.append(segments_by_id[segment_id])
+                    seen.add(segment_id)
+                    if len(ranked) >= top_n:
+                        return ranked
+
+            if ranked:
+                remaining = [seg for seg in segments if seg["id"] not in seen]
+                return ranked + _rank_segments_locally(mean_kp_embedding, remaining, top_n - len(ranked), cosine_sim)
+        except Exception:
+            pass
+
+    return _rank_segments_locally(mean_kp_embedding, segments, top_n, cosine_sim)
+
+
+def _rank_segments_locally(mean_kp_embedding: np.ndarray, segments: List[Dict], top_n: int, cosine_sim) -> List[Dict]:
+    if top_n <= 0 or not segments:
+        return []
+
+    heap = []
+    batch_size = get_embedding_batch_size()
+
+    for start in range(0, len(segments), batch_size):
+        batch = segments[start:start + batch_size]
+        batch_texts = [seg.get("text", "")[:512] for seg in batch]
+        batch_embeddings = encode_texts(batch_texts)
+
+        for seg, embedding in zip(batch, batch_embeddings):
+            sim = cosine_sim(mean_kp_embedding, embedding)
+            item = (sim, seg["id"], seg)
+            if len(heap) < top_n:
+                heapq.heappush(heap, item)
+            else:
+                heapq.heappushpop(heap, item)
+
+    heap.sort(key=lambda item: item[0], reverse=True)
+    return [seg for _, _, seg in heap]
 
 
 def build_persona(candidate: Dict, support_segments: List[Dict], supplemental_info: str = "", mode: str = "cross_examination") -> Dict:

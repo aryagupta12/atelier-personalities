@@ -1,5 +1,4 @@
-import { useState, useEffect } from 'react'
-import { getPersonas } from '../api'
+import { useState } from 'react'
 
 function ConfidenceBar({ value }) {
   const color = value >= 0.7 ? 'var(--green)' : value >= 0.4 ? 'var(--yellow)' : 'var(--red)'
@@ -169,24 +168,6 @@ export default function Personas({ personas, setPersonas, onConfigure }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  useEffect(() => {
-    const loadPersonas = async () => {
-      if (personas.length > 0) return
-      setLoading(true)
-      try {
-        const result = await getPersonas()
-        if (result.personas && result.personas.length > 0) {
-          setPersonas(result.personas)
-        }
-      } catch (err) {
-        setError(err.message)
-      } finally {
-        setLoading(false)
-      }
-    }
-    loadPersonas()
-  }, [])
-
   return (
     <div className="view">
       <div style={{ maxWidth: 900 }}>
@@ -194,18 +175,11 @@ export default function Personas({ personas, setPersonas, onConfigure }) {
           <div className="section-title" style={{ marginBottom: 0 }}>
             Witness Personas ({personas.length})
           </div>
-          <button className="btn btn-sm" onClick={async () => {
+          <button className="btn btn-sm" onClick={() => {
             setLoading(true)
-            try {
-              const result = await getPersonas()
-              setPersonas(result.personas || [])
-            } catch (err) {
-              setError(err.message)
-            } finally {
-              setLoading(false)
-            }
+            setTimeout(() => setLoading(false), 150)
           }}>
-            {loading ? <span className="spinner" style={{ width: 12, height: 12 }} /> : 'Refresh'}
+            {loading ? <span className="spinner" style={{ width: 12, height: 12 }} /> : 'Local State'}
           </button>
         </div>
 

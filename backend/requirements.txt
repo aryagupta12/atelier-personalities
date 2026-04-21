@@ -6,3 +6,4 @@ sentence-transformers==3.0.1
 numpy==1.26.4
 anthropic==0.84.0
 python-dotenv==1.0.1
+pinecone==7.3.0

@@ -12,11 +12,20 @@ import json
 import copy
 import os
 
-import session_store
-from document_processor import ingest_files
-from persona_builder import extract_candidates, build_persona, rank_segments_by_relevance
-from state_engine import encode_question, update_state, update_memory, compute_scores, detect_events
-from prompt_builder import build_system_prompt, tone_label
+try:
+    from . import session_store
+    from .document_processor import ingest_files
+    from .persona_builder import extract_candidates, build_persona, index_segments_in_pinecone, rank_segments_by_relevance
+    from .pinecone_store import pinecone_enabled
+    from .state_engine import encode_question, update_state, update_memory, compute_scores, detect_events
+    from .prompt_builder import build_system_prompt, tone_label
+except ImportError:
+    import session_store
+    from document_processor import ingest_files
+    from persona_builder import extract_candidates, build_persona, index_segments_in_pinecone, rank_segments_by_relevance
+    from pinecone_store import pinecone_enabled
+    from state_engine import encode_question, update_state, update_memory, compute_scores, detect_events
+    from prompt_builder import build_system_prompt, tone_label
 
 app = FastAPI(title="Witness Simulator API")
 
@@ -40,26 +49,35 @@ def get_client():
 # ── Pydantic models ──────────────────────────────────────────────────────────
 
 class ExtractCandidatesRequest(BaseModel):
-    segment_ids: List[str]
+    segment_ids: List[str] = []
+    segments: Optional[List[Dict[str, Any]]] = None
     supplemental_info: Optional[str] = ""
 
 
 class BuildPersonaRequest(BaseModel):
     candidate: Dict[str, Any]
-    support_segment_ids: List[str]
+    support_segment_ids: List[str] = []
+    support_segments: Optional[List[Dict[str, Any]]] = None
     supplemental_info: Optional[str] = ""
     mode: Optional[str] = "cross_examination"
 
 
 class CreateSessionRequest(BaseModel):
-    persona_id: str
+    persona_id: Optional[str] = None
+    persona: Optional[Dict[str, Any]] = None
     personality_state: Dict[str, float]  # {C, K, A, V, R, P}
     memory_overrides: Optional[List[Dict[str, Any]]] = []
 
 
 class ChatRequest(BaseModel):
-    session_id: str
+    session_id: Optional[str] = None
+    session: Optional[Dict[str, Any]] = None
     message: str
+
+
+class SuggestedQuestionsRequest(BaseModel):
+    session_id: Optional[str] = None
+    session: Optional[Dict[str, Any]] = None
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -83,23 +101,31 @@ async def ingest_endpoint(files: List[UploadFile] = File(...)):
 
     try:
         segments = ingest_files(file_dicts)
+        pinecone_indexed = False
+        if pinecone_enabled():
+            pinecone_indexed = index_segments_in_pinecone(segments)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     for seg in segments:
         session_store.segments_set(seg["id"], seg)
 
-    return {"segments": segments, "count": len(segments)}
+    return {
+        "segments": segments,
+        "count": len(segments),
+        "pinecone_indexed": pinecone_indexed,
+    }
 
 
 @app.post("/api/extract-candidates")
 def extract_candidates_endpoint(req: ExtractCandidatesRequest):
     """Extract witness candidates from specified segments."""
-    segments = []
-    for sid in req.segment_ids:
-        seg = session_store.segments_get(sid)
-        if seg:
-            segments.append(seg)
+    segments = list(req.segments or [])
+    if not segments:
+        for sid in req.segment_ids:
+            seg = session_store.segments_get(sid)
+            if seg:
+                segments.append(seg)
 
     if not segments:
         all_segs = session_store.segments_all()
@@ -118,11 +144,12 @@ def extract_candidates_endpoint(req: ExtractCandidatesRequest):
 @app.post("/api/build-persona")
 def build_persona_endpoint(req: BuildPersonaRequest):
     """Build a detailed persona for a candidate."""
-    support_segments = []
-    for sid in req.support_segment_ids:
-        seg = session_store.segments_get(sid)
-        if seg:
-            support_segments.append(seg)
+    support_segments = list(req.support_segments or [])
+    if not support_segments:
+        for sid in req.support_segment_ids:
+            seg = session_store.segments_get(sid)
+            if seg:
+                support_segments.append(seg)
 
     if not support_segments:
         all_segs = session_store.segments_all()
@@ -142,7 +169,9 @@ def build_persona_endpoint(req: BuildPersonaRequest):
 @app.post("/api/session")
 def create_session(req: CreateSessionRequest):
     """Create a new examination session."""
-    persona = session_store.personas_get(req.persona_id)
+    persona = req.persona
+    if not persona and req.persona_id:
+        persona = session_store.personas_get(req.persona_id)
     if not persona:
         raise HTTPException(status_code=404, detail="Persona not found")
 
@@ -207,6 +236,7 @@ def create_session(req: CreateSessionRequest):
     session_store.set(session_id, session)
     return {
         "session_id": session_id,
+        "session": session,
         "state": state_0,
         "memory": memory,
         "scores": compute_scores(state_0)
@@ -216,7 +246,9 @@ def create_session(req: CreateSessionRequest):
 @app.post("/api/chat")
 def chat_endpoint(req: ChatRequest):
     """Send a message in an examination session."""
-    session = session_store.get(req.session_id)
+    session = copy.deepcopy(req.session) if req.session else None
+    if not session and req.session_id:
+        session = session_store.get(req.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -296,10 +328,12 @@ def chat_endpoint(req: ChatRequest):
     session["trajectory"].append(copy.deepcopy(new_state))
     session["scores_trajectory"].append(scores)
 
-    session_store.set(req.session_id, session)
+    if req.session_id:
+        session_store.set(req.session_id, session)
 
     return {
         "reply": reply_text,
+        "session": session,
         "state": new_state,
         "scores": scores,
         "encoding": encoding,
@@ -355,9 +389,12 @@ def get_personas():
 
 
 @app.post("/api/session/{session_id}/suggested-questions")
-def get_suggested_questions(session_id: str):
+def get_suggested_questions(session_id: str, req: Optional[SuggestedQuestionsRequest] = None):
     """Generate follow-up questions based on actual conversation so far."""
-    session = session_store.get(session_id)
+    session = copy.deepcopy(req.session) if req and req.session else None
+    if not session:
+        lookup_id = session_id if session_id != "__client__" else (req.session_id if req else None)
+        session = session_store.get(lookup_id) if lookup_id else None
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 

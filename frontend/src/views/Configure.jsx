@@ -67,8 +67,8 @@ export default function Configure({ personas, configPersonaId, setConfigPersonaI
         sensitivity: t.sensitivity,
         selective: t.selective,
       }))
-      const result = await createSession(selectedPersonaId, state, memoryOverrides)
-      onSessionStart(result.session_id)
+      const result = await createSession(persona, state, memoryOverrides)
+      onSessionStart(result.session)
     } catch (err) {
       setError(err.message)
     } finally {

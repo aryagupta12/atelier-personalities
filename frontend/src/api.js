@@ -1,4 +1,5 @@
-const BASE = (import.meta.env.VITE_API_URL || '') + '/api'
+const API_ORIGIN = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+const BASE = `${API_ORIGIN}/api`
 
 async function errorDetail(res) {
   const t = await res.text()
@@ -20,70 +21,67 @@ export async function ingestFiles(files) {
   return res.json()
 }
 
-export async function extractCandidates(segmentIds, supplementalInfo = '') {
+export async function extractCandidates(segments, supplementalInfo = '') {
   const res = await fetch(`${BASE}/extract-candidates`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ segment_ids: segmentIds, supplemental_info: supplementalInfo })
+    body: JSON.stringify({
+      segment_ids: (segments || []).map(s => s.id),
+      segments,
+      supplemental_info: supplementalInfo,
+    })
   })
   if (!res.ok) throw new Error(`Extract candidates failed: ${await errorDetail(res)}`)
   return res.json()
 }
 
-export async function buildPersona(candidate, supportSegmentIds, supplementalInfo = '', mode = 'cross_examination') {
+export async function buildPersona(candidate, supportSegments, supplementalInfo = '', mode = 'cross_examination') {
   const res = await fetch(`${BASE}/build-persona`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ candidate, support_segment_ids: supportSegmentIds, supplemental_info: supplementalInfo, mode })
+    body: JSON.stringify({
+      candidate,
+      support_segment_ids: (supportSegments || []).map(s => s.id),
+      support_segments: supportSegments,
+      supplemental_info: supplementalInfo,
+      mode,
+    })
   })
   if (!res.ok) throw new Error(`Build persona failed: ${res.status}`)
   return res.json()
 }
 
-export async function createSession(personaId, personalityState, memoryOverrides = []) {
+export async function createSession(persona, personalityState, memoryOverrides = []) {
   const res = await fetch(`${BASE}/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ persona_id: personaId, personality_state: personalityState, memory_overrides: memoryOverrides })
+    body: JSON.stringify({
+      persona_id: persona?.persona_id || null,
+      persona,
+      personality_state: personalityState,
+      memory_overrides: memoryOverrides
+    })
   })
   if (!res.ok) throw new Error(`Create session failed: ${res.status}`)
   return res.json()
 }
 
-export async function chat(sessionId, message) {
+export async function chat(session, message) {
   const res = await fetch(`${BASE}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, message })
+    body: JSON.stringify({ session_id: session?.session_id || null, session, message })
   })
   if (!res.ok) throw new Error(`Chat failed: ${res.status}`)
   return res.json()
 }
 
-export async function getSession(sessionId) {
-  const res = await fetch(`${BASE}/session/${sessionId}`)
-  if (!res.ok) throw new Error(`Get session failed: ${res.status}`)
-  return res.json()
-}
-
-export async function getTrajectory(sessionId) {
-  const res = await fetch(`${BASE}/session/${sessionId}/trajectory`)
-  if (!res.ok) throw new Error(`Get trajectory failed: ${res.status}`)
-  return res.json()
-}
-
-export async function deleteSession(sessionId) {
-  await fetch(`${BASE}/session/${sessionId}`, { method: 'DELETE' })
-}
-
-export async function getPersonas() {
-  const res = await fetch(`${BASE}/personas`)
-  if (!res.ok) throw new Error(`Get personas failed: ${res.status}`)
-  return res.json()
-}
-
-export async function getSuggestedQuestions(sessionId) {
-  const res = await fetch(`${BASE}/session/${sessionId}/suggested-questions`, { method: 'POST' })
+export async function getSuggestedQuestions(session) {
+  const res = await fetch(`${BASE}/session/__client__/suggested-questions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: session?.session_id || null, session })
+  })
   if (!res.ok) throw new Error(`Get suggested questions failed: ${res.status}`)
   return res.json()
 }

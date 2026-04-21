@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
-import { getSession, chat, getSuggestedQuestions, deleteSession } from '../api'
+import { chat, getSuggestedQuestions } from '../api'
 import ChatThread from '../components/ChatThread'
 import StateDashboard from '../components/StateDashboard'
 
-export default function Examine({ sessionId, setSessionId, onReset }) {
-  const [session, setSession] = useState(null)
+export default function Examine({ session, setSession, onReset }) {
   const [messages, setMessages] = useState([])
   const [state, setState] = useState(null)
   const [state0, setState0] = useState(null)
@@ -20,35 +19,25 @@ export default function Examine({ sessionId, setSessionId, onReset }) {
   const inputRef = useRef(null)
 
   useEffect(() => {
-    if (!sessionId) {
+    if (!session) {
+      setSuggestedQuestions([])
       setLoadingSession(false)
       return
     }
-    loadSession()
-    fetchSuggestedQuestions()
-  }, [sessionId])
+    setMessages(session.messages || [])
+    setState(session.state || null)
+    setState0(session.state_0 || null)
+    setMemory(session.memory || {})
+    setScores(session.scores_trajectory?.[session.scores_trajectory.length - 1] || null)
+    setTrajectory(session.trajectory || (session.state ? [session.state] : []))
+    setScoresTrajectory(session.scores_trajectory || [])
+    setLoadingSession(false)
+    fetchSuggestedQuestions(session)
+  }, [session])
 
-  const loadSession = async () => {
-    setLoadingSession(true)
+  const fetchSuggestedQuestions = async (activeSession) => {
     try {
-      const data = await getSession(sessionId)
-      setSession(data)
-      setMessages(data.messages || [])
-      setState(data.state)
-      setState0(data.state_0)
-      setMemory(data.memory || {})
-      setScores(data.scores)
-      setTrajectory([data.state])
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoadingSession(false)
-    }
-  }
-
-  const fetchSuggestedQuestions = async () => {
-    try {
-      const data = await getSuggestedQuestions(sessionId)
+      const data = await getSuggestedQuestions(activeSession)
       setSuggestedQuestions(data.questions || [])
     } catch {
       // Non-fatal
@@ -57,7 +46,7 @@ export default function Examine({ sessionId, setSessionId, onReset }) {
 
   const handleSend = async () => {
     const msg = input.trim()
-    if (!msg || loading || !sessionId) return
+    if (!msg || loading || !session) return
 
     setInput('')
     setLoading(true)
@@ -68,7 +57,7 @@ export default function Examine({ sessionId, setSessionId, onReset }) {
     setMessages(prev => [...prev, userMsg])
 
     try {
-      const result = await chat(sessionId, msg)
+      const result = await chat(session, msg)
 
       const assistantMsg = {
         role: 'assistant',
@@ -81,17 +70,13 @@ export default function Examine({ sessionId, setSessionId, onReset }) {
       }
 
       setMessages(prev => [...prev, assistantMsg])
+      setSession(result.session)
       setState(result.state)
       setScores(result.scores)
-      setTrajectory(prev => [...prev, result.state])
-      setScoresTrajectory(prev => [...prev, result.scores])
-
-      // Update memory + refresh follow-up questions in parallel
-      const [sessionData] = await Promise.all([
-        getSession(sessionId),
-        fetchSuggestedQuestions(),
-      ])
-      setMemory(sessionData.memory || {})
+      setMemory(result.session.memory || {})
+      setTrajectory(result.session.trajectory || [])
+      setScoresTrajectory(result.session.scores_trajectory || [])
+      fetchSuggestedQuestions(result.session)
     } catch (err) {
       setError(err.message)
       // Remove optimistic user message on error
@@ -111,8 +96,7 @@ export default function Examine({ sessionId, setSessionId, onReset }) {
 
   const handleEndSession = async () => {
     if (window.confirm('End this examination session?')) {
-      await deleteSession(sessionId)
-      setSessionId(null)
+      setSession(null)
       onReset()
     }
   }
@@ -126,7 +110,7 @@ export default function Examine({ sessionId, setSessionId, onReset }) {
     )
   }
 
-  if (!sessionId || !session) {
+  if (!session) {
     return (
       <div className="view">
         <div className="empty-state">

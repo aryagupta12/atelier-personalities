@@ -64,8 +64,7 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
     setExtracting(true)
     setError(null)
     try {
-      const segIds = segments.map(s => s.id)
-      const result = await extractCandidates(segIds)
+      const result = await extractCandidates(segments)
       setCandidates(result.candidates || [])
     } catch (err) {
       setError(err.message)
@@ -78,8 +77,7 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
     setBuildingPersona(prev => ({ ...prev, [idx]: true }))
     setError(null)
     try {
-      const segIds = segments.map(s => s.id)
-      const result = await buildPersona(candidate, segIds)
+      const result = await buildPersona(candidate, segments)
       setPersonas(prev => [...prev, result.persona])
       onPersonaBuilt()
     } catch (err) {

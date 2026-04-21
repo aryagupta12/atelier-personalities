@@ -1,17 +1,44 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Upload from './views/Upload'
 import Personas from './views/Personas'
 import Configure from './views/Configure'
 import Examine from './views/Examine'
 import './app.css'
 
+const STORAGE_KEY = 'witness-sim-state'
+
 export default function App() {
   const [view, setView] = useState('upload')
   const [segments, setSegments] = useState([])
   const [candidates, setCandidates] = useState([])
   const [personas, setPersonas] = useState([])
-  const [sessionId, setSessionId] = useState(null)
+  const [session, setSession] = useState(null)
   const [configPersonaId, setConfigPersonaId] = useState(null)
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return
+      const saved = JSON.parse(raw)
+      setSegments(saved.segments || [])
+      setCandidates(saved.candidates || [])
+      setPersonas(saved.personas || [])
+      setSession(saved.session || null)
+      setConfigPersonaId(saved.configPersonaId || null)
+    } catch {
+      // Ignore corrupt local state.
+    }
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      segments,
+      candidates,
+      personas,
+      session,
+      configPersonaId,
+    }))
+  }, [segments, candidates, personas, session, configPersonaId])
 
   const nav = [
     { id: 'upload', label: 'Upload' },
@@ -63,8 +90,8 @@ export default function App() {
           personas={personas}
           configPersonaId={configPersonaId}
           setConfigPersonaId={setConfigPersonaId}
-          onSessionStart={(sid) => {
-            setSessionId(sid)
+          onSessionStart={(nextSession) => {
+            setSession(nextSession)
             setView('examine')
           }}
         />
@@ -72,8 +99,8 @@ export default function App() {
 
       {view === 'examine' && (
         <Examine
-          sessionId={sessionId}
-          setSessionId={setSessionId}
+          session={session}
+          setSession={setSession}
           onReset={() => setView('configure')}
         />
       )}
