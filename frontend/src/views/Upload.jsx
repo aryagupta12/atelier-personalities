@@ -38,15 +38,19 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
       const result = await ingestFiles(files)
       const newSegments = result.segments || []
       setSegments(prev => [...prev, ...newSegments])
-      // Track which files were added and how many segments each produced
+      // Count segments per source file
       const fileCounts = {}
       for (const seg of newSegments) {
         fileCounts[seg.source] = (fileCounts[seg.source] || 0) + 1
       }
+      // Always record every uploaded file, even if it produced 0 segments
       setUploadedFiles(prev => [
         ...prev,
-        ...Object.entries(fileCounts).map(([name, count]) => ({ name, segmentCount: count }))
+        ...files.map(f => ({ name: f.name, segmentCount: fileCounts[f.name] || 0 }))
       ])
+      if (newSegments.length === 0) {
+        setError('No text could be extracted from the uploaded file(s). The document may be image-based or empty.')
+      }
     } catch (err) {
       setError(err.message)
     } finally {
@@ -147,9 +151,11 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
             <div className="card" style={{ padding: '8px 12px', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {uploadedFiles.map((f, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--surface2)', borderRadius: 4, padding: '4px 10px', fontSize: 12 }}>
-                  <span style={{ color: 'var(--accent2)' }}>📄</span>
+                  <span style={{ color: f.segmentCount === 0 ? 'var(--muted)' : 'var(--accent2)' }}>📄</span>
                   <span style={{ color: 'var(--text)' }}>{f.name}</span>
-                  <span style={{ color: 'var(--muted)' }}>({f.segmentCount} segs)</span>
+                  <span style={{ color: f.segmentCount === 0 ? '#f87171' : 'var(--muted)' }}>
+                    {f.segmentCount === 0 ? 'no text extracted' : `(${f.segmentCount} segs)`}
+                  </span>
                 </div>
               ))}
             </div>

@@ -68,8 +68,9 @@ def extract_candidates(segments: List[Dict], supplemental_info: str = "") -> Lis
 
     # Concatenate segment texts (limit to avoid token limits)
     combined_text = ""
-    for seg in segments[:40]:  # limit to first 40 segments
-        combined_text += f"\n[Segment {seg['id']} | Source: {seg['source']} | Page: {seg['page']}]\n{seg['text']}\n"
+    for seg in segments[:20]:  # limit to first 20 segments
+        seg_text = seg['text'][:1500]  # truncate each segment to ~1500 chars
+        combined_text += f"\n[Segment {seg['id']} | Source: {seg['source']} | Page: {seg['page']}]\n{seg_text}\n"
 
     if supplemental_info:
         combined_text += f"\n\nSupplemental Information:\n{supplemental_info}\n"
