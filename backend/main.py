@@ -100,7 +100,7 @@ async def ingest_endpoint(files: List[UploadFile] = File(...)):
         })
 
     try:
-        segments = ingest_files(file_dicts)
+        segments, documents = ingest_files(file_dicts)
         pinecone_indexed = False
         if pinecone_enabled():
             pinecone_indexed = index_segments_in_pinecone(segments)
@@ -112,6 +112,7 @@ async def ingest_endpoint(files: List[UploadFile] = File(...)):
 
     return {
         "segments": segments,
+        "documents": documents,
         "count": len(segments),
         "pinecone_indexed": pinecone_indexed,
     }

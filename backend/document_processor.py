@@ -76,17 +76,19 @@ def segment_text(pages: List[Dict], filename: str, approx_tokens_per_chunk: int 
     return segments
 
 
-def ingest_files(files: List[Dict]) -> List[Dict]:
+def ingest_files(files: List[Dict]) -> tuple[List[Dict], List[Dict]]:
     """
     files: list of {filename, bytes, content_type}
-    Returns list of all segments across all files.
+    Returns (all_segments, documents) where documents is [{document_id, name, segment_count}].
     """
     all_segments = []
+    documents = []
 
     for f in files:
         filename = f["filename"]
         file_bytes = f["bytes"]
         content_type = f.get("content_type", "")
+        document_id = str(uuid.uuid4())
 
         if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
             pages = parse_pdf(file_bytes, filename)
@@ -94,6 +96,14 @@ def ingest_files(files: List[Dict]) -> List[Dict]:
             pages = parse_text(file_bytes, filename)
 
         segments = segment_text(pages, filename)
+        for seg in segments:
+            seg["document_id"] = document_id
+
+        documents.append({
+            "document_id": document_id,
+            "name": filename,
+            "segment_count": len(segments),
+        })
         all_segments.extend(segments)
 
-    return all_segments
+    return all_segments, documents

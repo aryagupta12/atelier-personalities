@@ -10,6 +10,7 @@ const STORAGE_KEY = 'witness-sim-state'
 export default function App() {
   const [view, setView] = useState('upload')
   const [segments, setSegments] = useState([])
+  const [documents, setDocuments] = useState([]) // [{document_id, name, segment_count}]
   const [candidates, setCandidates] = useState([])
   const [personas, setPersonas] = useState([])
   const [session, setSession] = useState(null)
@@ -21,6 +22,7 @@ export default function App() {
       if (!raw) return
       const saved = JSON.parse(raw)
       setSegments(saved.segments || [])
+      setDocuments(saved.documents || [])
       setCandidates(saved.candidates || [])
       setPersonas(saved.personas || [])
       setSession(saved.session || null)
@@ -33,12 +35,13 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       segments,
+      documents,
       candidates,
       personas,
       session,
       configPersonaId,
     }))
-  }, [segments, candidates, personas, session, configPersonaId])
+  }, [segments, documents, candidates, personas, session, configPersonaId])
 
   const nav = [
     { id: 'upload', label: 'Upload' },
@@ -66,6 +69,8 @@ export default function App() {
         <Upload
           segments={segments}
           setSegments={setSegments}
+          documents={documents}
+          setDocuments={setDocuments}
           candidates={candidates}
           setCandidates={setCandidates}
           personas={personas}

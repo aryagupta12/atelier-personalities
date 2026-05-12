@@ -8,13 +8,13 @@ const SIDE_BADGE = {
   unknown: 'badge-gray',
 }
 
-export default function Upload({ segments, setSegments, candidates, setCandidates, personas, setPersonas, onPersonaBuilt }) {
+export default function Upload({ segments, setSegments, documents, setDocuments, candidates, setCandidates, personas, setPersonas, onPersonaBuilt }) {
   const [dragging, setDragging] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [extracting, setExtracting] = useState(false)
   const [buildingPersona, setBuildingPersona] = useState({}) // {candidateIdx: true}
-  const [uploadedFiles, setUploadedFiles] = useState([]) // [{name, segmentCount}]
+  const [selectedDocIds, setSelectedDocIds] = useState(null) // null = all selected
   const fileInputRef = useRef(null)
 
   const handleDrop = async (e) => {
@@ -37,17 +37,11 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
     try {
       const result = await ingestFiles(files)
       const newSegments = result.segments || []
+      const newDocuments = result.documents || []
+
       setSegments(prev => [...prev, ...newSegments])
-      // Count segments per source file
-      const fileCounts = {}
-      for (const seg of newSegments) {
-        fileCounts[seg.source] = (fileCounts[seg.source] || 0) + 1
-      }
-      // Always record every uploaded file, even if it produced 0 segments
-      setUploadedFiles(prev => [
-        ...prev,
-        ...files.map(f => ({ name: f.name, segmentCount: fileCounts[f.name] || 0 }))
-      ])
+      setDocuments(prev => [...prev, ...newDocuments])
+
       if (newSegments.length === 0) {
         setError('No text could be extracted from the uploaded file(s). The document may be image-based or empty.')
       }
@@ -58,17 +52,53 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
     }
   }
 
+  const handleRemoveDocument = (documentId) => {
+    setSegments(prev => prev.filter(s => s.document_id !== documentId))
+    setDocuments(prev => prev.filter(d => d.document_id !== documentId))
+    setSelectedDocIds(prev => {
+      if (!prev) return null // was all-selected, remain all-selected after removal
+      return prev.filter(id => id !== documentId)
+    })
+    // Clear candidates since corpus changed
+    setCandidates([])
+  }
+
   const handleClearAll = () => {
     setSegments([])
+    setDocuments([])
     setCandidates([])
-    setUploadedFiles([])
+    setSelectedDocIds(null)
+  }
+
+  const toggleDocSelection = (documentId) => {
+    const allIds = documents.map(d => d.document_id)
+    const effective = selectedDocIds ?? allIds
+    if (effective.includes(documentId)) {
+      // deselect — but never allow 0 selected
+      const next = effective.filter(id => id !== documentId)
+      setSelectedDocIds(next.length === allIds.length ? null : next.length > 0 ? next : effective)
+    } else {
+      const next = [...effective, documentId]
+      setSelectedDocIds(next.length === allIds.length ? null : next)
+    }
+  }
+
+  const selectAll = () => setSelectedDocIds(null)
+  const deselectAll = () => {
+    if (documents.length > 0) setSelectedDocIds([documents[0].document_id])
+  }
+
+  const activeSegments = () => {
+    if (!selectedDocIds) return segments
+    return segments.filter(s => selectedDocIds.includes(s.document_id))
   }
 
   const handleExtract = async () => {
     setExtracting(true)
     setError(null)
     try {
-      const result = await extractCandidates(segments)
+      const segs = activeSegments()
+      const result = await extractCandidates(segs)
       setCandidates(result.candidates || [])
     } catch (err) {
       setError(err.message)
@@ -81,7 +111,8 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
     setBuildingPersona(prev => ({ ...prev, [idx]: true }))
     setError(null)
     try {
-      const result = await buildPersona(candidate, segments)
+      const segs = activeSegments()
+      const result = await buildPersona(candidate, segs)
       setPersonas(prev => [...prev, result.persona])
       onPersonaBuilt()
     } catch (err) {
@@ -90,6 +121,10 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
       setBuildingPersona(prev => ({ ...prev, [idx]: false }))
     }
   }
+
+  const allIds = documents.map(d => d.document_id)
+  const effectiveSelected = selectedDocIds ?? allIds
+  const activeCount = activeSegments().length
 
   return (
     <div className="view">
@@ -130,49 +165,125 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
             <>
               <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
               <div style={{ color: 'var(--text)', marginBottom: 4 }}>Drop PDF or text files here</div>
-              <div style={{ color: 'var(--muted)', fontSize: 12 }}>or click to browse</div>
+              <div style={{ color: 'var(--muted)', fontSize: 12 }}>or click to browse · add more at any time</div>
             </>
           )}
         </div>
 
         {error && <div className="error-msg">{error}</div>}
 
-        {/* Uploaded Files List */}
-        {uploadedFiles.length > 0 && (
+        {/* Documents List */}
+        {documents.length > 0 && (
           <div style={{ marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div className="section-title" style={{ marginBottom: 0 }}>
-                {uploadedFiles.length} Document{uploadedFiles.length !== 1 ? 's' : ''} Loaded
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div className="section-title" style={{ marginBottom: 0 }}>
+                  {documents.length} Document{documents.length !== 1 ? 's' : ''}
+                </div>
+                {documents.length > 1 && (
+                  <div style={{ display: 'flex', gap: 6, fontSize: 11, color: 'var(--muted)' }}>
+                    <button
+                      onClick={selectAll}
+                      style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', padding: 0, fontSize: 11 }}
+                    >
+                      Select all
+                    </button>
+                    <span>·</span>
+                    <button
+                      onClick={deselectAll}
+                      style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 0, fontSize: 11 }}
+                    >
+                      Deselect all
+                    </button>
+                  </div>
+                )}
               </div>
               <button className="btn btn-sm" onClick={handleClearAll} style={{ color: 'var(--muted)', fontSize: 12 }}>
                 Clear All
               </button>
             </div>
-            <div className="card" style={{ padding: '8px 12px', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {uploadedFiles.map((f, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--surface2)', borderRadius: 4, padding: '4px 10px', fontSize: 12 }}>
-                  <span style={{ color: f.segmentCount === 0 ? 'var(--muted)' : 'var(--accent2)' }}>📄</span>
-                  <span style={{ color: 'var(--text)' }}>{f.name}</span>
-                  <span style={{ color: f.segmentCount === 0 ? '#f87171' : 'var(--muted)' }}>
-                    {f.segmentCount === 0 ? 'no text extracted' : `(${f.segmentCount} segs)`}
-                  </span>
-                </div>
-              ))}
+
+            <div className="card" style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {documents.map((doc) => {
+                const isSelected = effectiveSelected.includes(doc.document_id)
+                return (
+                  <div
+                    key={doc.document_id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      background: isSelected ? 'var(--surface2)' : 'transparent',
+                      border: `1px solid ${isSelected ? 'var(--border)' : 'transparent'}`,
+                      borderRadius: 4,
+                      padding: '5px 10px',
+                      fontSize: 12,
+                      opacity: isSelected ? 1 : 0.45,
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {/* Checkbox */}
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleDocSelection(doc.document_id)}
+                      style={{ cursor: 'pointer', accentColor: 'var(--accent)', flexShrink: 0 }}
+                    />
+                    <span style={{ color: doc.segment_count === 0 ? 'var(--muted)' : 'var(--accent2)', flexShrink: 0 }}>📄</span>
+                    <span style={{ color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {doc.name}
+                    </span>
+                    <span style={{ color: doc.segment_count === 0 ? '#f87171' : 'var(--muted)', flexShrink: 0 }}>
+                      {doc.segment_count === 0 ? 'no text' : `${doc.segment_count} segs`}
+                    </span>
+                    {/* Remove button */}
+                    <button
+                      onClick={() => handleRemoveDocument(doc.document_id)}
+                      title="Remove document"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: 'var(--muted)',
+                        padding: '0 2px',
+                        fontSize: 14,
+                        lineHeight: 1,
+                        flexShrink: 0,
+                      }}
+                      onMouseEnter={e => e.target.style.color = '#f87171'}
+                      onMouseLeave={e => e.target.style.color = 'var(--muted)'}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )
+              })}
             </div>
+
+            {selectedDocIds && (
+              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
+                {effectiveSelected.length} of {documents.length} documents selected · {activeCount} segments active
+              </div>
+            )}
           </div>
         )}
 
-        {/* Segments Table */}
+        {/* Segments summary + Extract */}
         {segments.length > 0 && (
           <div style={{ marginBottom: 24 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <div className="section-title" style={{ marginBottom: 0 }}>
-                {segments.length} Segments Extracted
+                {activeCount} Segment{activeCount !== 1 ? 's' : ''} Active
+                {selectedDocIds && segments.length !== activeCount && (
+                  <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: 12, marginLeft: 8 }}>
+                    ({segments.length} total)
+                  </span>
+                )}
               </div>
               <button
                 className="btn btn-primary btn-sm"
                 onClick={handleExtract}
-                disabled={extracting}
+                disabled={extracting || activeCount === 0}
               >
                 {extracting ? (
                   <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -183,6 +294,7 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
               </button>
             </div>
 
+            {/* Segments table */}
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ maxHeight: 300, overflowY: 'auto' }}>
                 <table>
@@ -195,7 +307,7 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
                     </tr>
                   </thead>
                   <tbody>
-                    {segments.map(seg => (
+                    {activeSegments().map(seg => (
                       <tr key={seg.id}>
                         <td style={{ fontFamily: 'monospace', color: 'var(--muted)', fontSize: 11 }}>
                           {seg.id.substring(0, 8)}
@@ -270,7 +382,7 @@ export default function Upload({ segments, setSegments, candidates, setCandidate
         {segments.length === 0 && !loading && (
           <div className="empty-state">
             <h3>No documents loaded</h3>
-            <p>Upload one or more PDF or text files. You can add documents in multiple batches — segments accumulate across uploads.</p>
+            <p>Upload one or more PDF or text files. You can add documents in multiple batches and select which ones to use for extraction.</p>
           </div>
         )}
       </div>
